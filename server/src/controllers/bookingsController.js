@@ -1,6 +1,4 @@
-import { Booking } from '../models/Booking.js';
-import { Hairstyle } from '../models/Hairstyle.js';
-import { Coupon } from '../models/Coupon.js';
+import { prisma } from '../config/prisma.js';
 
 export const ALL_TIME_SLOTS = [
   '08:30 AM',
@@ -12,6 +10,32 @@ export const ALL_TIME_SLOTS = [
   '05:30 PM'
 ];
 
+// Normalize booking for frontend compatibility
+const normalizeBooking = (b) => {
+  if (!b) return null;
+  // Convert PENDING to Pending, CONFIRMED to Confirmed, etc.
+  const statusFormatted = b.status
+    ? b.status.charAt(0).toUpperCase() + b.status.slice(1).toLowerCase()
+    : 'Pending';
+
+  return {
+    ...b,
+    _id: b.id,
+    status: statusFormatted,
+    rawStatus: b.status,
+    mpesaReference: b.payment?.transactionCode || ''
+  };
+};
+
+// Map status string to Prisma Enum
+const mapStatusToEnum = (status) => {
+  const upper = (status || '').toUpperCase();
+  if (['PENDING', 'CONFIRMED', 'COMPLETED', 'CANCELLED'].includes(upper)) {
+    return upper;
+  }
+  return 'PENDING';
+};
+
 // GET /api/bookings/available-slots?date=YYYY-MM-DD
 export const getAvailableSlots = async (req, res) => {
   try {
@@ -21,20 +45,27 @@ export const getAvailableSlots = async (req, res) => {
     }
 
     // Find all active bookings on this date (excluding cancelled)
-    const activeBookings = await Booking.find({
-      date,
-      status: { $ne: 'Cancelled' }
-    }).select('timeSlot hairstyleName customerName');
+    const activeBookings = await prisma.booking.findMany({
+      where: {
+        date,
+        status: { not: 'CANCELLED' }
+      },
+      select: {
+        timeSlot: true,
+        hairstyleName: true,
+        customerName: true
+      }
+    });
 
     const bookedSlotsMap = new Map();
-    activeBookings.forEach(b => {
+    activeBookings.forEach((b) => {
       bookedSlotsMap.set(b.timeSlot, {
         isBooked: true,
         hairstyleName: b.hairstyleName
       });
     });
 
-    const slots = ALL_TIME_SLOTS.map(time => {
+    const slots = ALL_TIME_SLOTS.map((time) => {
       const bookedInfo = bookedSlotsMap.get(time);
       return {
         time,
@@ -47,7 +78,7 @@ export const getAvailableSlots = async (req, res) => {
       success: true,
       date,
       totalSlots: ALL_TIME_SLOTS.length,
-      availableCount: slots.filter(s => s.isAvailable).length,
+      availableCount: slots.filter((s) => s.isAvailable).length,
       slots
     });
   } catch (error) {
@@ -68,6 +99,7 @@ export const createBooking = async (req, res) => {
       timeSlot,
       preferredHairColor,
       additionalNotes,
+      notes,
       couponCode
     } = req.body;
 
@@ -78,11 +110,13 @@ export const createBooking = async (req, res) => {
       });
     }
 
-    // Prevent double booking for the same slot
-    const existingBooking = await Booking.findOne({
-      date,
-      timeSlot,
-      status: { $ne: 'Cancelled' }
+    // Prevent duplicate booking for the same date & time slot
+    const existingBooking = await prisma.booking.findFirst({
+      where: {
+        date,
+        timeSlot,
+        status: { not: 'CANCELLED' }
+      }
     });
 
     if (existingBooking) {
@@ -92,54 +126,84 @@ export const createBooking = async (req, res) => {
       });
     }
 
-    // Get hairstyle details
-    const hairstyle = await Hairstyle.findById(hairstyleId);
+    // Lookup hairstyle
+    const hairstyle = await prisma.hairstyle.findUnique({
+      where: { id: hairstyleId }
+    });
+
     if (!hairstyle) {
       return res.status(404).json({ success: false, message: 'Selected hairstyle was not found' });
+    }
+
+    // Find or create customer User
+    const emailClean = customerEmail.toLowerCase().trim();
+    let customer = await prisma.user.findUnique({
+      where: { email: emailClean }
+    });
+
+    if (!customer) {
+      // Auto-create customer account with temporary random password
+      customer = await prisma.user.create({
+        data: {
+          name: customerName.trim(),
+          email: emailClean,
+          phone: customerPhone.trim(),
+          password: 'CustomerAutoAccount2026!',
+          role: 'CUSTOMER'
+        }
+      });
     }
 
     let finalPrice = hairstyle.price;
     let discount = 0;
 
-    // Apply coupon if provided
+    // Validate and apply coupon if provided
     if (couponCode && couponCode.trim() !== '') {
-      const coupon = await Coupon.findOne({
-        code: couponCode.trim().toUpperCase(),
-        isActive: true
+      const coupon = await prisma.coupon.findUnique({
+        where: { code: couponCode.trim().toUpperCase() }
       });
-      if (coupon && coupon.usedCount < coupon.maxUses) {
+
+      if (coupon && coupon.isActive && coupon.usedCount < coupon.maxUses) {
         discount = (finalPrice * coupon.discountPercent) / 100;
         finalPrice = Math.max(0, finalPrice - discount);
-        coupon.usedCount += 1;
-        await coupon.save();
+
+        await prisma.coupon.update({
+          where: { id: coupon.id },
+          data: { usedCount: { increment: 1 } }
+        });
       }
     }
 
-    const booking = new Booking({
-      customerName,
-      customerPhone,
-      customerEmail,
-      hairstyle: hairstyle._id,
-      hairstyleName: hairstyle.name,
-      date,
-      timeSlot,
-      preferredHairColor: preferredHairColor || '#1B - Natural Black',
-      additionalNotes: additionalNotes || '',
-      status: 'Pending',
-      totalAmount: finalPrice,
-      depositAmount: Math.min(1000, finalPrice), // KES 1,000 standard deposit
-      depositPaid: false,
-      paymentStatus: 'Unpaid',
-      couponCode: couponCode || '',
-      discountAmount: discount
+    const booking = await prisma.booking.create({
+      data: {
+        customerId: customer.id,
+        customerName: customerName.trim(),
+        customerPhone: customerPhone.trim(),
+        customerEmail: emailClean,
+        hairstyleId: hairstyle.id,
+        hairstyleName: hairstyle.name,
+        date,
+        timeSlot,
+        preferredHairColor: preferredHairColor || '#1B - Natural Black',
+        notes: (notes || additionalNotes || '').trim(),
+        status: 'PENDING',
+        totalAmount: finalPrice,
+        depositAmount: Math.min(1000, finalPrice),
+        depositPaid: false,
+        couponCode: couponCode || null,
+        discountAmount: discount
+      },
+      include: {
+        customer: true,
+        hairstyle: true,
+        payment: true
+      }
     });
-
-    const savedBooking = await booking.save();
 
     res.status(201).json({
       success: true,
       message: 'Your appointment request has been received. We will contact you shortly.',
-      data: savedBooking
+      data: normalizeBooking(booking)
     });
   } catch (error) {
     console.error('Error creating booking:', error);
@@ -151,38 +215,48 @@ export const createBooking = async (req, res) => {
 export const getAllBookings = async (req, res) => {
   try {
     const { status, date, search, page = 1, limit = 50 } = req.query;
-    const filter = {};
+    const where = {};
 
     if (status && status !== 'All') {
-      filter.status = status;
+      where.status = mapStatusToEnum(status);
     }
 
     if (date) {
-      filter.date = date;
+      where.date = date;
     }
 
     if (search && search.trim() !== '') {
-      filter.$or = [
-        { customerName: { $regex: search.trim(), $options: 'i' } },
-        { customerPhone: { $regex: search.trim(), $options: 'i' } },
-        { customerEmail: { $regex: search.trim(), $options: 'i' } },
-        { hairstyleName: { $regex: search.trim(), $options: 'i' } }
+      const term = search.trim();
+      where.OR = [
+        { customerName: { contains: term, mode: 'insensitive' } },
+        { customerPhone: { contains: term, mode: 'insensitive' } },
+        { customerEmail: { contains: term, mode: 'insensitive' } },
+        { hairstyleName: { contains: term, mode: 'insensitive' } }
       ];
     }
 
-    const bookings = await Booking.find(filter)
-      .populate('hairstyle')
-      .sort({ date: -1, timeSlot: 1 })
-      .limit(Number(limit))
-      .skip((Number(page) - 1) * Number(limit));
+    const bookings = await prisma.booking.findMany({
+      where,
+      include: {
+        hairstyle: true,
+        customer: true,
+        payment: true
+      },
+      orderBy: [
+        { date: 'desc' },
+        { timeSlot: 'asc' }
+      ],
+      take: Number(limit),
+      skip: (Number(page) - 1) * Number(limit)
+    });
 
-    const total = await Booking.countDocuments(filter);
+    const total = await prisma.booking.count({ where });
 
     res.json({
       success: true,
       count: bookings.length,
       total,
-      data: bookings
+      data: bookings.map(normalizeBooking)
     });
   } catch (error) {
     console.error('Error fetching bookings:', error);
@@ -190,7 +264,7 @@ export const getAllBookings = async (req, res) => {
   }
 };
 
-// GET /api/bookings/my-bookings?search=... (Customer lookup)
+// GET /api/bookings/my-bookings?query=... (Customer lookup)
 export const getMyBookings = async (req, res) => {
   try {
     const { query } = req.query;
@@ -199,16 +273,25 @@ export const getMyBookings = async (req, res) => {
     }
 
     const cleanQuery = query.trim();
-    const bookings = await Booking.find({
-      $or: [
-        { customerPhone: { $regex: cleanQuery, $options: 'i' } },
-        { customerEmail: { $regex: cleanQuery, $options: 'i' } }
-      ]
-    })
-      .populate('hairstyle')
-      .sort({ createdAt: -1 });
+    const bookings = await prisma.booking.findMany({
+      where: {
+        OR: [
+          { customerPhone: { contains: cleanQuery, mode: 'insensitive' } },
+          { customerEmail: { contains: cleanQuery, mode: 'insensitive' } }
+        ]
+      },
+      include: {
+        hairstyle: true,
+        payment: true
+      },
+      orderBy: { createdAt: 'desc' }
+    });
 
-    res.json({ success: true, count: bookings.length, data: bookings });
+    res.json({
+      success: true,
+      count: bookings.length,
+      data: bookings.map(normalizeBooking)
+    });
   } catch (error) {
     console.error('Error fetching customer bookings:', error);
     res.status(500).json({ success: false, message: 'Server error looking up appointments' });
@@ -218,42 +301,34 @@ export const getMyBookings = async (req, res) => {
 // PATCH /api/bookings/:id/status (Admin)
 export const updateBookingStatus = async (req, res) => {
   try {
-    const { status, paymentStatus, depositPaid } = req.body;
-    const allowedStatuses = ['Pending', 'Confirmed', 'Completed', 'Cancelled'];
+    const { id } = req.params;
+    const { status, depositPaid } = req.body;
 
-    const updateFields = {};
+    const data = {};
     if (status) {
-      if (!allowedStatuses.includes(status)) {
-        return res.status(400).json({ success: false, message: 'Invalid status' });
-      }
-      updateFields.status = status;
+      data.status = mapStatusToEnum(status);
     }
-
-    if (paymentStatus) {
-      updateFields.paymentStatus = paymentStatus;
-    }
-
     if (depositPaid !== undefined) {
-      updateFields.depositPaid = Boolean(depositPaid);
-      if (depositPaid && (!updateFields.paymentStatus || updateFields.paymentStatus === 'Unpaid')) {
-        updateFields.paymentStatus = 'Deposit_Paid';
+      data.depositPaid = Boolean(depositPaid);
+      if (depositPaid && (!data.status || data.status === 'PENDING')) {
+        data.status = 'CONFIRMED';
       }
     }
 
-    const updated = await Booking.findByIdAndUpdate(
-      req.params.id,
-      { $set: updateFields },
-      { new: true }
-    ).populate('hairstyle');
-
-    if (!updated) {
-      return res.status(404).json({ success: false, message: 'Booking not found' });
-    }
+    const updated = await prisma.booking.update({
+      where: { id },
+      data,
+      include: {
+        hairstyle: true,
+        customer: true,
+        payment: true
+      }
+    });
 
     res.json({
       success: true,
       message: `Booking status updated to ${updated.status}`,
-      data: updated
+      data: normalizeBooking(updated)
     });
   } catch (error) {
     console.error('Error updating booking status:', error);
@@ -265,29 +340,59 @@ export const updateBookingStatus = async (req, res) => {
 export const simulateMpesaPayment = async (req, res) => {
   try {
     const { id } = req.params;
-    const { phoneNumber, amount } = req.body;
+    const { amount } = req.body;
 
-    const booking = await Booking.findById(id);
+    const booking = await prisma.booking.findUnique({
+      where: { id },
+      include: { payment: true }
+    });
+
     if (!booking) {
       return res.status(404).json({ success: false, message: 'Booking not found' });
     }
 
     const randomMpesaCode = `QKD${Math.floor(100000 + Math.random() * 900000)}B`;
+    const paymentAmount = amount ? Number(amount) : booking.depositAmount;
 
-    booking.depositPaid = true;
-    booking.paymentStatus = 'Deposit_Paid';
-    booking.mpesaReference = randomMpesaCode;
-    booking.status = 'Confirmed';
-    await booking.save();
+    // Create or update Payment record
+    const payment = await prisma.payment.upsert({
+      where: { bookingId: booking.id },
+      update: {
+        amount: paymentAmount,
+        transactionCode: randomMpesaCode,
+        status: 'COMPLETED'
+      },
+      create: {
+        bookingId: booking.id,
+        amount: paymentAmount,
+        transactionCode: randomMpesaCode,
+        status: 'COMPLETED',
+        paymentMethod: 'M-PESA'
+      }
+    });
+
+    // Update booking status
+    const updatedBooking = await prisma.booking.update({
+      where: { id: booking.id },
+      data: {
+        depositPaid: true,
+        status: 'CONFIRMED'
+      },
+      include: {
+        hairstyle: true,
+        payment: true
+      }
+    });
 
     res.json({
       success: true,
-      message: `M-Pesa payment of KES ${amount || booking.depositAmount} verified successfully. Transaction Code: ${randomMpesaCode}`,
+      message: `M-Pesa payment of KES ${paymentAmount} verified successfully. Transaction Code: ${randomMpesaCode}`,
       data: {
         receiptNumber: randomMpesaCode,
-        bookingId: booking._id,
-        status: booking.status,
-        paymentStatus: booking.paymentStatus
+        bookingId: booking.id,
+        status: 'Confirmed',
+        paymentStatus: 'Deposit_Paid',
+        payment
       }
     });
   } catch (error) {
@@ -299,10 +404,10 @@ export const simulateMpesaPayment = async (req, res) => {
 // DELETE /api/bookings/:id (Admin)
 export const deleteBooking = async (req, res) => {
   try {
-    const deleted = await Booking.findByIdAndDelete(req.params.id);
-    if (!deleted) {
-      return res.status(404).json({ success: false, message: 'Booking not found' });
-    }
+    const { id } = req.params;
+    await prisma.booking.delete({
+      where: { id }
+    });
     res.json({ success: true, message: 'Booking removed successfully' });
   } catch (error) {
     console.error('Error deleting booking:', error);
