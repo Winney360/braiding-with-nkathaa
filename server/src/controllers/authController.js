@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
-import { AdminUser } from '../models/AdminUser.js';
+import bcrypt from 'bcryptjs';
+import { prisma } from '../config/prisma.js';
 
 const generateToken = (id) => {
   return jwt.sign(
@@ -18,23 +19,35 @@ export const adminLogin = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Please provide email and password' });
     }
 
-    const admin = await AdminUser.findOne({ email: email.toLowerCase().trim() });
+    const user = await prisma.user.findUnique({
+      where: { email: email.toLowerCase().trim() }
+    });
 
-    if (admin && (await admin.matchPassword(password))) {
-      res.json({
-        success: true,
-        message: 'Welcome back, Nkathaa!',
-        data: {
-          _id: admin._id,
-          name: admin.name,
-          email: admin.email,
-          role: admin.role,
-          token: generateToken(admin._id)
-        }
-      });
-    } else {
-      res.status(401).json({ success: false, message: 'Invalid email or password' });
+    if (!user) {
+      return res.status(401).json({ success: false, message: 'Invalid email or password' });
     }
+
+    if (user.role !== 'ADMIN') {
+      return res.status(403).json({ success: false, message: 'Access denied. Administrator privileges required.' });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(401).json({ success: false, message: 'Invalid email or password' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Welcome back, Nkathaa!',
+      data: {
+        id: user.id,
+        _id: user.id, // For backwards compatibility
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        token: generateToken(user.id)
+      }
+    });
   } catch (error) {
     console.error('Error during admin login:', error);
     res.status(500).json({ success: false, message: 'Server error during login' });
