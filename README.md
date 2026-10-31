@@ -33,10 +33,11 @@
 
 ### Backend (`server/`)
 - **Node.js** & **Express.js 5**
-- **MongoDB** & **Mongoose 9**
-  - Connects to remote `MONGODB_URI` or local MongoDB.
-  - Automatically launches an embedded `mongodb-memory-server` if no external database is configured, ensuring zero setup friction.
-  - Automatically seeds realistic hairstyles, gallery photos, initial appointments, reviews, and promotional coupons on initial start.
+- **PostgreSQL 16** via Docker container
+- **Prisma ORM 6.x** (`@prisma/client` & `prisma`)
+  - Schema with models: `User`, `Hairstyle`, `Booking`, `Payment`, `Review`, `GalleryItem`, `Coupon`
+  - Strict relational integrity & unique slot constraints (`date`, `timeSlot`) to prevent double bookings
+  - Automated database migrations and seeds
 - **Authentication:** JWT (JSON Web Tokens) & **bcryptjs** password hashing for admin portal.
 - **Image Handling:** Multer disk upload with local serving + **Cloudinary** SDK support.
 - **RESTful API** with full CORS, Morgan logging, and error handling.
@@ -45,19 +46,45 @@
 
 ## 🚀 Quick Start Guide
 
-This project is organized into two separate folders: `client` and `server`. You can run them concurrently in separate terminal windows.
+### 1. Start the PostgreSQL Container with Docker
 
-### 1. Start the Backend Server
+```bash
+docker compose up -d
+```
+This spins up PostgreSQL on `localhost:5432` with database `braiding_nkathaa`.
+
+### 2. Apply Prisma Schema & Seed the Database
 
 ```bash
 cd server
 pnpm install
+pnpm prisma:push    # Pushes the schema to PostgreSQL
+pnpm seed           # Populates initial hairstyles, gallery, coupons, reviews, and bookings
+```
+
+### 3. Start the Backend Server
+
+```bash
+cd server
 pnpm dev
 ```
 
 - Server will start on `http://localhost:5000`
 - Health check: `http://localhost:5000/api/health`
 - Default Admin Account:
+  - **Email:** `admin@nkathaa.com`
+  - **Password:** `AdminPassword123!`
+
+### 4. Start the Frontend Client
+
+```bash
+cd client
+pnpm install
+pnpm dev
+```
+
+- Vite dev server will start on `http://localhost:5173` (or `http://localhost:5174` if port 5173 is occupied)
+- API requests to `/api` and `/uploads` are automatically proxied to the backend.
   - **Email:** `admin@nkathaa.com`
   - **Password:** `AdminPassword123!`
 
