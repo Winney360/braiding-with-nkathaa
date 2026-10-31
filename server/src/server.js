@@ -3,7 +3,7 @@ import cors from 'cors';
 import morgan from 'morgan';
 import dotenv from 'dotenv';
 import path from 'path';
-import { connectDB } from './config/db.js';
+import { connectDB } from './config/prisma.js';
 import { seedDatabase } from './seed.js';
 
 import hairstylesRouter from './routes/hairstylesRouter.js';
