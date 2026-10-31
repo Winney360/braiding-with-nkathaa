@@ -1,0 +1,166 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  CUSTOMER
+  ADMIN
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+model User {
+  id        String    @id @default(uuid())
+  name      String
+  phone     String?
+  email     String    @unique
+  password  String
+  role      Role      @default(CUSTOMER)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  // Relationships
+  bookings  Booking[]
+  reviews   Review[]
+
+  @@map("users")
+}
+
+model Hairstyle {
+  id                 String    @id @default(uuid())
+  name               String
+  slug               String    @unique
+  category           String
+  description        String    @db.Text
+  shortDescription   String?   @db.Text
+  price              Float
+  duration           String
+  durationMinutes    Int       @default(240)
+  hairLength         String
+  imageUrl           String
+  images             String[]  @default([])
+  isPopular          Boolean   @default(false)
+  isTrending         Boolean   @default(false)
+  maintenanceTips    String[]  @default([])
+  faqs               Json?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  // Relationships
+  bookings           Booking[]
+
+  @@map("hairstyles")
+}
+
+model Booking {
+  id                 String        @id @default(uuid())
+  customerId         String
+  customer           User          @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerName       String
+  customerPhone      String
+  customerEmail      String
+
+  hairstyleId        String
+  hairstyle          Hairstyle     @relation(fields: [hairstyleId], references: [id], onDelete: Restrict)
+  hairstyleName      String
+
+  date               String        // Stored as YYYY-MM-DD
+  timeSlot           String        // e.g. "10:00 AM"
+  preferredHairColor String?       @default("#1B - Natural Black")
+  status             BookingStatus @default(PENDING)
+  notes              String?       @db.Text
+
+  totalAmount        Float         @default(0)
+  depositAmount      Float         @default(1000)
+  depositPaid        Boolean       @default(false)
+
+  couponCode         String?
+  discountAmount     Float         @default(0)
+
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  // 1-to-1 relationship with Payment
+  payment            Payment?
+
+  @@unique([date, timeSlot])
+  @@map("bookings")
+}
+
+model Payment {
+  id              String        @id @default(uuid())
+  bookingId       String        @unique
+  booking         Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  amount          Float
+  transactionCode String        @unique
+  status          PaymentStatus @default(COMPLETED)
+  paymentMethod   String        @default("M-PESA")
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@map("payments")
+}
+
+model Review {
+  id                String    @id @default(uuid())
+  userId            String?
+  user              User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  customerName      String
+  customerLocation  String?   @default("Nairobi")
+  rating            Int       @default(5)
+  comment           String    @db.Text
+  imageUrl          String?
+  hairstyleCategory String?   @default("Knotless Braids")
+  hairstyleName     String?   @default("")
+  isApproved        Boolean   @default(true)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@map("reviews")
+}
+
+model GalleryItem {
+  id          String   @id @default(uuid())
+  title       String
+  category    String
+  imageUrl    String
+  aspectRatio String   @default("tall")
+  tags        String[] @default([])
+  likes       Int      @default(0)
+  featured    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("gallery_items")
+}
+
+model Coupon {
+  id              String   @id @default(uuid())
+  code            String   @unique
+  discountPercent Int
+  description     String?
+  maxUses         Int      @default(100)
+  usedCount       Int      @default(0)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("coupons")
+}
