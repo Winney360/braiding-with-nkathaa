@@ -1,4 +1,4 @@
-import { Hairstyle } from '../models/Hairstyle.js';
+import { prisma } from '../config/prisma.js';
 
 export const getHairstyleRecommendations = async (req, res) => {
   try {
@@ -11,7 +11,7 @@ export const getHairstyleRecommendations = async (req, res) => {
       scalpSensitivity = 'Normal'
     } = req.body;
 
-    const allStyles = await Hairstyle.find({});
+    const allStyles = await prisma.hairstyle.findMany({});
 
     // Intelligent matching & scoring algorithm
     const scoredStyles = allStyles.map((style) => {
@@ -20,7 +20,10 @@ export const getHairstyleRecommendations = async (req, res) => {
       let stylingTips = [];
 
       // Scalp sensitivity preference: Knotless and Boho are tension-free
-      if (scalpSensitivity === 'Sensitive' && (style.name.includes('Knotless') || style.name.includes('Boho') || style.name.includes('Twist'))) {
+      if (
+        scalpSensitivity === 'Sensitive' &&
+        (style.name.includes('Knotless') || style.name.includes('Boho') || style.name.includes('Twist'))
+      ) {
         score += 20;
         matchReasons.push('Gentle on sensitive edges with zero scalp tension');
       }
@@ -84,7 +87,10 @@ export const getHairstyleRecommendations = async (req, res) => {
       if (style.isTrending) score += 5;
 
       return {
-        hairstyle: style,
+        hairstyle: {
+          ...style,
+          _id: style.id
+        },
         score: Math.min(99, score),
         matchReasons: matchReasons.length > 0 ? matchReasons : ['Harmonious length and texture match for your profile'],
         stylingTips: stylingTips.length > 0 ? stylingTips : ['Sleep on a silk pillowcase to keep edges neat and smooth']
@@ -97,7 +103,9 @@ export const getHairstyleRecommendations = async (req, res) => {
 
     // AI Consultant Commentary
     const topPick = topMatches[0];
-    const aiConsultationNotes = `Based on your ${faceShape} face shape and ${lifestyle} lifestyle, ${topPick.hairstyle.name} is your ultimate match! It provides the ideal balance of elegance, scalp comfort, and effortless styling.`;
+    const aiConsultationNotes = topPick
+      ? `Based on your ${faceShape} face shape and ${lifestyle} lifestyle, ${topPick.hairstyle.name} is your ultimate match! It provides the ideal balance of elegance, scalp comfort, and effortless styling.`
+      : 'Explore our catalog for the ideal braid match.';
 
     res.json({
       success: true,
